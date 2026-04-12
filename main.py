@@ -27,21 +27,21 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # MODEL CONFIGURATION
 # ------------------------------
 # 1) HAND_LANDMARKER_VARIANT:
-#    - "int8"    -> strict int8 mode (expects a local int8 .task model)
 #    - "float16" -> uses official MediaPipe float16 model bundle
+#
+# NOTE: int8 path is temporarily disabled while we stabilize conversion.
 #
 # 2) HAND_LANDMARKER_MODEL_PATH:
 #    Optional custom absolute or relative path to a .task model file.
 #
 # 3) HAND_LANDMARKER_MODEL_URL:
 #    Optional URL used for download when requested model file is not present.
-HAND_LANDMARKER_VARIANT = os.getenv("HAND_LANDMARKER_VARIANT", "int8").strip().lower()
+HAND_LANDMARKER_VARIANT = os.getenv("HAND_LANDMARKER_VARIANT", "float16").strip().lower()
 HAND_LANDMARKER_MODEL_PATH = os.getenv("HAND_LANDMARKER_MODEL_PATH", "").strip()
 HAND_LANDMARKER_MODEL_URL = os.getenv("HAND_LANDMARKER_MODEL_URL", "").strip()
 
 FLOAT16_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task"
 FLOAT16_MODEL_PATH = PROJECT_ROOT / "models" / "hand_landmarker_float16.task"
-INT8_MODEL_PATH = PROJECT_ROOT / "models" / "hand_landmarker_int8.task"
 
 # ------------------------------
 # PERFORMANCE SETTINGS
@@ -72,7 +72,17 @@ HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
 VisionRunningMode = mp.tasks.vision.RunningMode
 
 # Connection pairs used for drawing hand skeleton lines.
-HAND_CONNECTIONS = tuple(mp.solutions.hands.HAND_CONNECTIONS)
+try:
+    HAND_CONNECTIONS = tuple(mp.solutions.hands.HAND_CONNECTIONS)
+except AttributeError:
+    # Fallback for builds where `mediapipe.solutions` is not exposed.
+    HAND_CONNECTIONS = (
+        (0, 1), (1, 2), (2, 3), (3, 4),
+        (0, 5), (5, 6), (6, 7), (7, 8),
+        (5, 9), (9, 10), (10, 11), (11, 12),
+        (9, 13), (13, 14), (14, 15), (15, 16),
+        (13, 17), (0, 17), (17, 18), (18, 19), (19, 20),
+    )
 
 # Landmark index map for fingertips: thumb, index, middle, ring, pinky.
 tipIds=[4,8,12,16,20]
@@ -96,21 +106,13 @@ def resolve_model_path_and_url():
             raise FileNotFoundError(f"Configured model path does not exist: {custom_path}")
         return custom_path, "custom"
 
-    if HAND_LANDMARKER_VARIANT == "float16":
+    if HAND_LANDMARKER_VARIANT == "int8":
+        print("Int8 is temporarily disabled; falling back to float16 model.")
+
+    if HAND_LANDMARKER_VARIANT in ("float16", "int8"):
         return FLOAT16_MODEL_PATH, FLOAT16_MODEL_URL
 
-    if HAND_LANDMARKER_VARIANT == "int8":
-        if INT8_MODEL_PATH.exists():
-            return INT8_MODEL_PATH, "custom"
-        if HAND_LANDMARKER_MODEL_URL:
-            return INT8_MODEL_PATH, HAND_LANDMARKER_MODEL_URL
-        raise FileNotFoundError(
-            "Int8 model requested, but no int8 task bundle was found. "
-            "Place your int8 model at models/hand_landmarker_int8.task, "
-            "or set HAND_LANDMARKER_MODEL_PATH to your model file."
-        )
-
-    raise ValueError("HAND_LANDMARKER_VARIANT must be 'int8' or 'float16'.")
+    raise ValueError("HAND_LANDMARKER_VARIANT must be 'float16' for now.")
 
 
 def ensure_model_exists(model_path, model_url):
