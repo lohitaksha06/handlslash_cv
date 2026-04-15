@@ -24,6 +24,25 @@ import hashlib
 from pathlib import Path
 # urlretrieve downloads a model if it is missing locally.
 from urllib.request import urlretrieve
+# Import pyautogui for mouse control
+import pyautogui
+# Use deque for storing trail points
+from collections import deque
+import numpy as np
+
+# Set pyautogui to not fail out if move to corner, and disable delay
+pyautogui.FAILSAFE = False
+pyautogui.PAUSE = 0.0
+
+# Screen size for mapping
+SCREEN_WIDTH, SCREEN_HEIGHT = pyautogui.size()
+
+from collections import deque
+import numpy as np
+
+# Trail for the ninja slice effect
+slash_trail = deque(maxlen=20)  # Max length of the tail
+
 # Import arrow-key scan code constants used by the game.
 from directkeys import right_pressed,left_pressed
 # Import helper functions that synthesize key down/up events on Windows.
@@ -76,7 +95,13 @@ time.sleep(2.0)
 # Runtime state used by the gesture controller loop.
 # Tracks keys currently held down by this script.
 current_key_pressed = set()
+is_mouse_down = False
 previous_gesture = None  # Track previous gesture to avoid repeated key presses
+
+# Trail data for the fruit ninja blade effect
+# stores tuples of (col, row) up to maxlen points
+slash_trail = deque(maxlen=15)
+
 frame_skip = 0  # Process every nth frame for better performance
 # Last timestamp passed to VIDEO-mode inference.
 last_timestamp_ms = 0
@@ -290,65 +315,83 @@ try:
                         qx, qy = quantize_landmark_coords(lm)
                         lmList.append([id, qx, qy])
 
-                # 4) Convert landmarks to finger-open/finger-closed states.
-                fingers = []
-                if len(lmList) != 0:
-                    # Thumb rule uses x-axis relationship for this camera orientation.
-                    if lmList[tipIds[0]][1] > lmList[tipIds[0] - 1][1]:
-                        fingers.append(1)
-                    else:
-                        fingers.append(0)
+                    import math
+                    # Extract index tip for cursor position
+                    index_tip = hand_landmarks[8]
+                    
+                    # Flip x-axis since camera is mirrored
+                    cursor_x = int((1.0 - index_tip.x) * SCREEN_WIDTH) 
+                    cursor_y = int(index_tip.y * SCREEN_HEIGHT)
 
-                    # Remaining fingers use y-axis tip-vs-joint relationship.
-                    for id in range(1, 5):
-                        if lmList[tipIds[id]][2] < lmList[tipIds[id] - 2][2]:
+                    # Clamp to screen bounds
+                    cursor_x = max(0, min(SCREEN_WIDTH - 1, cursor_x))
+                    cursor_y = max(0, min(SCREEN_HEIGHT - 1, cursor_y))
+
+                    # Move the mouse cursor instantly
+                    pyautogui.moveTo(cursor_x, cursor_y)
+
+                    # Check which fingers are open
+                    fingers = []
+                    if len(lmList) != 0:
+                        # Thumb (using x-axis relationship)
+                        if lmList[tipIds[0]][1] > lmList[tipIds[0] - 1][1]:
                             fingers.append(1)
                         else:
                             fingers.append(0)
-                    total = fingers.count(1)
 
-                    # 5) Map finger-count to game gesture.
+                        # Remaining checking y-axis for tip vs joint 
+                        for id in range(1, 5):
+                            if lmList[tipIds[id]][2] < lmList[tipIds[id] - 2][2]:
+                                fingers.append(1)
+                            else:
+                                fingers.append(0)
+                                
+                    total_open_fingers = fingers.count(1)
                     current_gesture = "NONE"
-                    # Closed fist -> brake.
-                    if total == 0:
-                        current_gesture = "BRAKE"
-                    # Open palm -> accelerate.
-                    elif total == 5:
-                        current_gesture = "GAS"
+                    
+                    # Store tracking point for the trail
+                    frame_w = image.shape[1]
+                    frame_h = image.shape[0]
+                    trail_px = int(index_tip.x * frame_w)
+                    trail_py = int(index_tip.y * frame_h)
 
-                    # Only update keys if gesture has changed
-                    if current_gesture != previous_gesture:
-                        if current_gesture == "BRAKE":
-                            # Release any key currently held before pressing brake.
-                            for key in current_key_pressed:
-                                ReleaseKey(key)
-                            current_key_pressed.clear()
-                            # Hold brake key while this gesture is active.
-                            PressKey(break_key_pressed)
-                            current_key_pressed.add(break_key_pressed)
-                        elif current_gesture == "GAS":
-                            # Release any key currently held before pressing gas.
-                            for key in current_key_pressed:
-                                ReleaseKey(key)
-                            current_key_pressed.clear()
-                            # Hold gas key while this gesture is active.
-                            PressKey(accelerato_key_pressed)
-                            current_key_pressed.add(accelerato_key_pressed)
-                        else:  # "NONE"
-                            # Neutral gesture: release everything.
-                            for key in current_key_pressed:
-                                ReleaseKey(key)
-                            current_key_pressed.clear()
-                        # Save state so unchanged gestures do not retrigger key events.
-                        previous_gesture = current_gesture
+                    # If mostly closed (0 to 1 open fingers), consider it a fist / cup (for selecting/grabbing)
+                    if total_open_fingers <= 1:
+                        current_gesture = "SELECT (FIST)"
+                        slash_trail.append((trail_px, trail_py))
+                        if not is_mouse_down:
+                            pyautogui.mouseDown()
+                            is_mouse_down = True
+                    else:
+                        current_gesture = "HOVER"
+                        slash_trail.clear()  # Clear trail when not grabbing
+                        if is_mouse_down:
+                            pyautogui.mouseUp()
+                            is_mouse_down = False
+                    previous_gesture = current_gesture
+
+            # Draw the ninja slash trail
+            if len(slash_trail) > 1:
+                # Convert deque to a list for easier iteration
+                pts = list(slash_trail)
+                for i in range(1, len(pts)):
+                    # Calculate thickness that fades from the start to the end
+                    progress = i / len(pts)
+                    thickness = int(12 * progress) + 2
+                    glow_thickness = thickness + 8
+                    
+                    # Yellow/Orange glow (BGR format)
+                    cv2.line(image, pts[i - 1], pts[i], (0, 165, 255), glow_thickness, cv2.LINE_AA)
+                    # White core
+                    cv2.line(image, pts[i - 1], pts[i], (255, 255, 255), thickness, cv2.LINE_AA)
 
             # Update gesture display outside the processing loop to prevent flickering
-            if previous_gesture == "BRAKE":
-                cv2.rectangle(image, (20, 300), (270, 425), (0, 0, 255), cv2.FILLED)  # Red box for brake
-                cv2.putText(image, "BRAKE", (45, 375), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 5)
-            elif previous_gesture == "GAS":
-                cv2.rectangle(image, (20, 300), (270, 425), (0, 255, 0), cv2.FILLED)
-                cv2.putText(image, " GAS", (45, 375), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 5)
+            if previous_gesture == "SELECT (FIST)":
+                cv2.rectangle(image, (20, 300), (350, 425), (0, 0, 255), cv2.FILLED)  # Grab/select box
+                cv2.putText(image, "SELECT!", (45, 375), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 5)
+            elif previous_gesture == "HOVER":
+                cv2.rectangle(image, (20, 300), (350, 425), (0, 255, 0), cv2.FILLED)
+                cv2.putText(image, "HOVER", (45, 375), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 5)
 
             # Show the annotated frame in an OpenCV window.
             cv2.imshow("Frame", image)
@@ -360,6 +403,9 @@ finally:
     for key in current_key_pressed:
         ReleaseKey(key)
 
+    if is_mouse_down:
+        pyautogui.mouseUp()
+        
     video.release()
     cv2.destroyAllWindows()
 
