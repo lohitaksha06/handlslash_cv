@@ -102,6 +102,9 @@ previous_gesture = None  # Track previous gesture to avoid repeated key presses
 # stores tuples of (col, row) up to maxlen points
 slash_trail = deque(maxlen=15)
 
+# Queue to store the last few cursor positions for smoothing
+cursor_history = deque(maxlen=4)
+
 frame_skip = 0  # Process every nth frame for better performance
 # Last timestamp passed to VIDEO-mode inference.
 last_timestamp_ms = 0
@@ -318,6 +321,8 @@ try:
                     import math
                     # Extract index tip for cursor position
                     index_tip = hand_landmarks[8]
+                    thumb_tip = hand_landmarks[4]
+                    middle_tip = hand_landmarks[12]
                     
                     # Flip x-axis since camera is mirrored
                     cursor_x = int((1.0 - index_tip.x) * SCREEN_WIDTH) 
@@ -327,47 +332,43 @@ try:
                     cursor_x = max(0, min(SCREEN_WIDTH - 1, cursor_x))
                     cursor_y = max(0, min(SCREEN_HEIGHT - 1, cursor_y))
 
-                    # Move the mouse cursor instantly
-                    pyautogui.moveTo(cursor_x, cursor_y)
+                    # Append to cursor history for smoothing
+                    cursor_history.append((cursor_x, cursor_y))
+                    
+                    # Calculate smoothed (average) cursor position
+                    avg_x = int(np.mean([p[0] for p in cursor_history]))
+                    avg_y = int(np.mean([p[1] for p in cursor_history]))
 
-                    # Check which fingers are open
-                    fingers = []
-                    if len(lmList) != 0:
-                        # Thumb (using x-axis relationship)
-                        if lmList[tipIds[0]][1] > lmList[tipIds[0] - 1][1]:
-                            fingers.append(1)
-                        else:
-                            fingers.append(0)
+                    # Move the mouse cursor instantly to the smoothed coordinates
+                    pyautogui.moveTo(avg_x, avg_y)
+                    
+                    # Calculate distance between thumb tip and index tip for pinching
+                    dx = thumb_tip.x - index_tip.x
+                    dy = thumb_tip.y - index_tip.y
+                    pinch_dist = math.sqrt(dx*dx + dy*dy)
 
-                        # Remaining checking y-axis for tip vs joint 
-                        for id in range(1, 5):
-                            if lmList[tipIds[id]][2] < lmList[tipIds[id] - 2][2]:
-                                fingers.append(1)
-                            else:
-                                fingers.append(0)
-                                
-                    total_open_fingers = fingers.count(1)
                     current_gesture = "NONE"
                     
-                    # Store tracking point for the trail
-                    frame_w = image.shape[1]
-                    frame_h = image.shape[0]
-                    trail_px = int(index_tip.x * frame_w)
-                    trail_py = int(index_tip.y * frame_h)
+                    # Store tracking point for the trail based on smoothed coordinates
+                    trail_px = int((1.0 - (avg_x / SCREEN_WIDTH)) * image.shape[1])
+                    trail_py = int((avg_y / SCREEN_HEIGHT) * image.shape[0])
 
-                    # If mostly closed (0 to 1 open fingers), consider it a fist / cup (for selecting/grabbing)
-                    if total_open_fingers <= 1:
-                        current_gesture = "SELECT (FIST)"
+                    # Simple Pinch Click Logic
+                    pinch_threshold = 0.05
+                    
+                    if pinch_dist < pinch_threshold:
+                        current_gesture = "SELECT (PINCH)"
                         slash_trail.append((trail_px, trail_py))
                         if not is_mouse_down:
                             pyautogui.mouseDown()
                             is_mouse_down = True
                     else:
                         current_gesture = "HOVER"
-                        slash_trail.clear()  # Clear trail when not grabbing
+                        slash_trail.clear()
                         if is_mouse_down:
                             pyautogui.mouseUp()
                             is_mouse_down = False
+                            
                     previous_gesture = current_gesture
 
             # Draw the ninja slash trail
@@ -386,9 +387,9 @@ try:
                     cv2.line(image, pts[i - 1], pts[i], (255, 255, 255), thickness, cv2.LINE_AA)
 
             # Update gesture display outside the processing loop to prevent flickering
-            if previous_gesture == "SELECT (FIST)":
-                cv2.rectangle(image, (20, 300), (350, 425), (0, 0, 255), cv2.FILLED)  # Grab/select box
-                cv2.putText(image, "SELECT!", (45, 375), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 5)
+            if previous_gesture == "SELECT (PINCH)":
+                cv2.rectangle(image, (20, 300), (450, 425), (0, 0, 255), cv2.FILLED)  # Grab/select box
+                cv2.putText(image, "SELECT (PINCH)!", (45, 375), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 4)
             elif previous_gesture == "HOVER":
                 cv2.rectangle(image, (20, 300), (350, 425), (0, 255, 0), cv2.FILLED)
                 cv2.putText(image, "HOVER", (45, 375), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 5)
